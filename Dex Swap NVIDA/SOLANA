@@ -1,0 +1,171 @@
+
+use anchor_lang::prelude::*;
+
+declare_id!("Fg6PaFpoGXkYsidMpWxTWqkZ7FEfcYkgMQHGzYw4PzY");
+
+const FEE_BPS: u64 = 30;
+const BPS: u64 = 10_000;
+
+#[program]
+pub mod nvda_sol_amm {
+    use super::*;
+
+    pub fn initialize(
+        ctx: Context<Initialize>,
+        sol_reserve: u64,
+        nvda_reserve: u64,
+    ) -> Result<()> {
+        require!(
+            sol_reserve > 0 && nvda_reserve > 0,
+            DexError::InvalidReserve
+        );
+
+        let pool = &mut ctx.accounts.pool;
+        pool.authority = ctx.accounts.authority.key();
+        pool.sol_reserve = sol_reserve;
+        pool.nvda_reserve = nvda_reserve;
+        pool.bump = ctx.bumps.pool;
+
+        Ok(())
+    }
+
+    pub fn swap_sol_to_nvda(
+        ctx: Context<UpdatePool>,
+        amount_in: u64,
+        min_out: u64,
+    ) -> Result<()> {
+        require!(amount_in > 0, DexError::InvalidAmount);
+
+        let pool = &mut ctx.accounts.pool;
+
+        let amount_after_fee =
+            (amount_in as u128) * ((BPS - FEE_BPS) as u128);
+
+        let numerator =
+            amount_after_fee * (pool.nvda_reserve as u128);
+
+        let denominator =
+            (pool.sol_reserve as u128) * (BPS as u128)
+            + amount_after_fee;
+
+        let amount_out =
+            (numerator / denominator) as u64;
+
+        require!(amount_out >= min_out, DexError::Slippage);
+        require!(
+            amount_out < pool.nvda_reserve,
+            DexError::InsufficientLiquidity
+        );
+
+        pool.sol_reserve = pool.sol_reserve
+            .checked_add(amount_in)
+            .ok_or(DexError::MathError)?;
+
+        pool.nvda_reserve = pool.nvda_reserve
+            .checked_sub(amount_out)
+            .ok_or(DexError::MathError)?;
+
+        msg!("SOL input: {}", amount_in);
+        msg!("Mock NVDA output: {}", amount_out);
+
+        Ok(())
+    }
+
+    pub fn swap_nvda_to_sol(
+        ctx: Context<UpdatePool>,
+        amount_in: u64,
+        min_out: u64,
+    ) -> Result<()> {
+        require!(amount_in > 0, DexError::InvalidAmount);
+
+        let pool = &mut ctx.accounts.pool;
+
+        let amount_after_fee =
+            (amount_in as u128) * ((BPS - FEE_BPS) as u128);
+
+        let numerator =
+            amount_after_fee * (pool.sol_reserve as u128);
+
+        let denominator =
+            (pool.nvda_reserve as u128) * (BPS as u128)
+            + amount_after_fee;
+
+        let amount_out =
+            (numerator / denominator) as u64;
+
+        require!(amount_out >= min_out, DexError::Slippage);
+        require!(
+            amount_out < pool.sol_reserve,
+            DexError::InsufficientLiquidity
+        );
+
+        pool.nvda_reserve = pool.nvda_reserve
+            .checked_add(amount_in)
+            .ok_or(DexError::MathError)?;
+
+        pool.sol_reserve = pool.sol_reserve
+            .checked_sub(amount_out)
+            .ok_or(DexError::MathError)?;
+
+        msg!("Mock NVDA input: {}", amount_in);
+        msg!("SOL output: {}", amount_out);
+
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct Initialize<'info> {
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + Pool::INIT_SPACE,
+        seeds = [b"pool", authority.key().as_ref()],
+        bump
+    )]
+    pub pool: Account<'info, Pool>,
+
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdatePool<'info> {
+    #[account(
+        mut,
+        seeds = [b"pool", pool.authority.as_ref()],
+        bump = pool.bump
+    )]
+    pub pool: Account<'info, Pool>,
+
+    pub trader: Signer<'info>,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct Pool {
+    pub authority: Pubkey,
+    pub sol_reserve: u64,
+    pub nvda_reserve: u64,
+    pub bump: u8,
+}
+
+#[error_code]
+pub enum DexError {
+    #[msg("Invalid pool reserves")]
+    InvalidReserve,
+
+    #[msg("Amount must be greater than zero")]
+    InvalidAmount,
+
+    #[msg("Output below minimum amount")]
+    Slippage,
+
+    #[msg("Insufficient liquidity")]
+    InsufficientLiquidity,
+
+    #[msg("Math error")]
+    MathError,
+}
